@@ -1,0 +1,171 @@
+name: Update Met Police RSS Feed
+
+
+# ============================================================
+# WHEN SHOULD THE SCRAPER RUN?
+# ============================================================
+
+on:
+
+  # Allow you to run it manually
+  workflow_dispatch:
+
+  # Run every 6 hours
+  schedule:
+
+    - cron: "0 */6 * * *"
+
+  # Also run whenever you change the repository
+  push:
+
+    branches:
+      - main
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+
+permissions:
+
+  contents: write
+
+  pages: write
+
+  id-token: write
+
+
+# ============================================================
+# BUILD THE RSS FEED
+# ============================================================
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------
+      # Download your repository
+      # ------------------------------------------------------
+
+      - name: Checkout repository
+
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------
+      # Install Python
+      # ------------------------------------------------------
+
+      - name: Set up Python
+
+        uses: actions/setup-python@v5
+
+        with:
+
+          python-version: "3.12"
+
+
+      # ------------------------------------------------------
+      # Install Python libraries
+      # ------------------------------------------------------
+
+      - name: Install dependencies
+
+        run: |
+
+          pip install -r requirements.txt
+
+
+      # ------------------------------------------------------
+      # Run the scraper
+      # ------------------------------------------------------
+
+      - name: Run scraper
+
+        run: |
+
+          python scraper.py
+
+
+      # ------------------------------------------------------
+      # Save the updated RSS feed
+      # ------------------------------------------------------
+
+      - name: Commit RSS feed
+
+        run: |
+
+          git config user.name "github-actions[bot]"
+
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add feed.xml
+
+          git diff --cached --quiet || git commit -m "Update RSS feed"
+
+          git push
+
+
+      # ------------------------------------------------------
+      # Prepare GitHub Pages
+      # ------------------------------------------------------
+
+      - name: Prepare Pages
+
+        run: |
+
+          mkdir -p public
+
+          cp feed.xml public/feed.xml
+
+
+      # ------------------------------------------------------
+      # Configure GitHub Pages
+      # ------------------------------------------------------
+
+      - name: Configure Pages
+
+        uses: actions/configure-pages@v5
+
+
+      # ------------------------------------------------------
+      # Upload RSS feed
+      # ------------------------------------------------------
+
+      - name: Upload Pages artifact
+
+        uses: actions/upload-pages-artifact@v3
+
+        with:
+
+          path: public
+
+
+  # ========================================================
+  # DEPLOY
+  # ========================================================
+
+  deploy:
+
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    environment:
+
+      name: github-pages
+
+      url: ${{ steps.deployment.outputs.page_url }}
+
+
+    steps:
+
+      - name: Deploy to GitHub Pages
+
+        id: deployment
+
+        uses: actions/deploy-pages@v4
