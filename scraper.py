@@ -1,9 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
-from email.utils import format_datetime
+from email.utils import parsedate_to_datetime, format_datetime
 from urllib.parse import urljoin
-from xml.etree.ElementTree import Element, SubElement, ElementTree
+from xml.etree.ElementTree import Element, SubElement, ElementTree, register_namespace
 
 
 # ============================================================
@@ -14,10 +14,8 @@ SOURCE_URL = "https://news.met.police.uk/tag/counter-terrorism-command"
 
 BASE_URL = "https://news.met.police.uk"
 
-# CHANGE THIS
-# Put your GitHub username and repository name here.
+# CHANGE THIS TO YOUR GITHUB PAGES ADDRESS
 RSS_URL = "https://greydog395.github.io/met-police-rss/feed.xml"
-
 
 HEADERS = {
     "User-Agent": (
@@ -28,7 +26,19 @@ HEADERS = {
 
 
 # ============================================================
-# DOWNLOAD THE MET POLICE PAGE
+# RSS NAMESPACE
+# ============================================================
+
+ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"
+
+register_namespace(
+    "atom",
+    ATOM_NAMESPACE
+)
+
+
+# ============================================================
+# DOWNLOAD PAGE
 # ============================================================
 
 def download_page():
@@ -43,13 +53,13 @@ def download_page():
 
     response.raise_for_status()
 
-    print("Page downloaded successfully.")
+    print("Download successful.")
 
     return response.text
 
 
 # ============================================================
-# SCRAPE ARTICLES
+# FIND ARTICLES
 # ============================================================
 
 def scrape_articles(page):
@@ -63,7 +73,6 @@ def scrape_articles(page):
 
     seen_urls = set()
 
-    # Find all links on the page
     for link in soup.find_all("a", href=True):
 
         title = link.get_text(
@@ -79,21 +88,20 @@ def scrape_articles(page):
         if not href:
             continue
 
-        # Convert relative URLs into full URLs
         url = urljoin(
             BASE_URL,
             href
         )
 
-        # Only keep Met Police links
+        # Only Met Police pages
         if not url.startswith(BASE_URL):
             continue
 
-        # Only keep news articles
+        # Only news articles
         if "/news/" not in url:
             continue
 
-        # Avoid duplicates
+        # Remove duplicate links
         if url in seen_urls:
             continue
 
@@ -105,10 +113,205 @@ def scrape_articles(page):
         })
 
     print(
-        f"Found {len(articles)} possible articles."
+        f"Found {len(articles)} articles."
     )
 
     return articles
+
+
+# ============================================================
+# GET ARTICLE INFORMATION
+# ============================================================
+
+def get_article_details(article):
+
+    print(
+        "Reading:",
+        article["title"]
+    )
+
+    try:
+
+        response = requests.get(
+            article["url"],
+            headers=HEADERS,
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # ----------------------------------------------------
+        # FIND PUBLICATION DATE
+        # ----------------------------------------------------
+
+        publication_date = None
+
+        # First try <time>
+        time_element = soup.find("time")
+
+        if time_element:
+
+            date_value = (
+                time_element.get("datetime")
+                or time_element.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if date_value:
+
+                try:
+
+                    publication_date = (
+                        parsedate_to_datetime(
+                            date_value
+                        )
+                    )
+
+                except Exception:
+
+                    try:
+
+                        publication_date = (
+                            datetime.fromisoformat(
+                                date_value.replace(
+                                    "Z",
+                                    "+00:00"
+                                )
+                            )
+                        )
+
+                    except Exception:
+                        pass
+
+        # ----------------------------------------------------
+        # TRY META TAGS
+        # ----------------------------------------------------
+
+        if publication_date is None:
+
+            meta_names = [
+                "article:published_time",
+                "date",
+                "pubdate",
+                "publishdate"
+            ]
+
+            for name in meta_names:
+
+                element = soup.find(
+                    "meta",
+                    attrs={
+                        "property": name
+                    }
+                )
+
+                if element is None:
+
+                    element = soup.find(
+                        "meta",
+                        attrs={
+                            "name": name
+                        }
+                    )
+
+                if element:
+
+                    value = element.get(
+                        "content"
+                    )
+
+                    if value:
+
+                        try:
+
+                            publication_date = (
+                                datetime.fromisoformat(
+                                    value.replace(
+                                        "Z",
+                                        "+00:00"
+                                    )
+                                )
+                            )
+
+                            break
+
+                        except Exception:
+                            pass
+
+        # ----------------------------------------------------
+        # FIND DESCRIPTION
+        # ----------------------------------------------------
+
+        description = ""
+
+        meta_description = soup.find(
+            "meta",
+            attrs={
+                "name": "description"
+            }
+        )
+
+        if meta_description:
+
+            description = (
+                meta_description.get(
+                    "content",
+                    ""
+                ).strip()
+            )
+
+        # ----------------------------------------------------
+        # FALLBACK DATE
+        # ----------------------------------------------------
+
+        if publication_date is None:
+
+            publication_date = datetime.now(
+                timezone.utc
+            )
+
+        # Make sure the date has timezone
+        if publication_date.tzinfo is None:
+
+            publication_date = (
+                publication_date.replace(
+                    tzinfo=timezone.utc
+                )
+            )
+
+        return {
+            "title": article["title"],
+            "url": article["url"],
+            "description": description,
+            "publication_date": publication_date
+        }
+
+    except Exception as error:
+
+        print(
+            "Could not read article:",
+            error
+        )
+
+        # Still return the article
+        # so one failure doesn't stop
+        # the entire RSS feed.
+
+        return {
+            "title": article["title"],
+            "url": article["url"],
+            "description": article["title"],
+            "publication_date": datetime.now(
+                timezone.utc
+            )
+        }
 
 
 # ============================================================
@@ -120,10 +323,7 @@ def create_rss(articles):
     rss = Element(
         "rss",
         {
-            "version": "2.0",
-            "xmlns:atom": (
-                "http://www.w3.org/2005/Atom"
-            )
+            "version": "2.0"
         }
     )
 
@@ -132,7 +332,10 @@ def create_rss(articles):
         "channel"
     )
 
-    # Feed title
+    # --------------------------------------------------------
+    # CHANNEL TITLE
+    # --------------------------------------------------------
+
     title = SubElement(
         channel,
         "title"
@@ -143,7 +346,10 @@ def create_rss(articles):
         "Counter Terrorism Command"
     )
 
-    # Feed website
+    # --------------------------------------------------------
+    # CHANNEL LINK
+    # --------------------------------------------------------
+
     link = SubElement(
         channel,
         "link"
@@ -151,7 +357,10 @@ def create_rss(articles):
 
     link.text = SOURCE_URL
 
-    # Feed description
+    # --------------------------------------------------------
+    # DESCRIPTION
+    # --------------------------------------------------------
+
     description = SubElement(
         channel,
         "description"
@@ -162,7 +371,10 @@ def create_rss(articles):
         "stories tagged Counter Terrorism Command."
     )
 
-    # Language
+    # --------------------------------------------------------
+    # LANGUAGE
+    # --------------------------------------------------------
+
     language = SubElement(
         channel,
         "language"
@@ -170,7 +382,10 @@ def create_rss(articles):
 
     language.text = "en-GB"
 
-    # Last updated time
+    # --------------------------------------------------------
+    # LAST BUILD DATE
+    # --------------------------------------------------------
+
     last_build_date = SubElement(
         channel,
         "lastBuildDate"
@@ -180,10 +395,13 @@ def create_rss(articles):
         datetime.now(timezone.utc)
     )
 
-    # RSS self-reference
+    # --------------------------------------------------------
+    # ATOM SELF LINK
+    # --------------------------------------------------------
+
     atom_link = SubElement(
         channel,
-        "{http://www.w3.org/2005/Atom}link"
+        f"{{{ATOM_NAMESPACE}}}link"
     )
 
     atom_link.set(
@@ -201,9 +419,9 @@ def create_rss(articles):
         "application/rss+xml"
     )
 
-    # ========================================================
-    # ADD ARTICLES
-    # ========================================================
+    # --------------------------------------------------------
+    # ARTICLES
+    # --------------------------------------------------------
 
     for article in articles:
 
@@ -212,7 +430,7 @@ def create_rss(articles):
             "item"
         )
 
-        # Article title
+        # Title
         item_title = SubElement(
             item,
             "title"
@@ -220,7 +438,7 @@ def create_rss(articles):
 
         item_title.text = article["title"]
 
-        # Article URL
+        # Link
         item_link = SubElement(
             item,
             "link"
@@ -228,7 +446,7 @@ def create_rss(articles):
 
         item_link.text = article["url"]
 
-        # Unique ID
+        # GUID
         guid = SubElement(
             item,
             "guid"
@@ -247,7 +465,9 @@ def create_rss(articles):
             "description"
         )
 
-        item_description.text = article["title"]
+        item_description.text = (
+            article["description"]
+        )
 
         # Publication date
         pub_date = SubElement(
@@ -256,21 +476,23 @@ def create_rss(articles):
         )
 
         pub_date.text = format_datetime(
-            datetime.now(timezone.utc)
+            article["publication_date"]
         )
 
     return rss
 
 
 # ============================================================
-# SAVE RSS FILE
+# SAVE RSS
 # ============================================================
 
 def save_rss(rss):
 
-    print("Saving RSS feed...")
+    print("Creating feed.xml...")
 
-    tree = ElementTree(rss)
+    tree = ElementTree(
+        rss
+    )
 
     tree.write(
         "feed.xml",
@@ -278,17 +500,21 @@ def save_rss(rss):
         xml_declaration=True
     )
 
-    print("RSS feed saved as feed.xml")
+    print(
+        "feed.xml created successfully."
+    )
 
 
 # ============================================================
-# MAIN PROGRAM
+# MAIN
 # ============================================================
 
 def main():
 
+    # Download category page
     page = download_page()
 
+    # Find articles
     articles = scrape_articles(
         page
     )
@@ -296,23 +522,62 @@ def main():
     if not articles:
 
         print(
-            "WARNING: No articles were found."
+            "ERROR: No articles found."
         )
 
         return
 
-    rss = create_rss(
-        articles
+    # Get details from each article
+    detailed_articles = []
+
+    for article in articles:
+
+        details = get_article_details(
+            article
+        )
+
+        detailed_articles.append(
+            details
+        )
+
+    # Sort newest first
+    detailed_articles.sort(
+        key=lambda x: x["publication_date"],
+        reverse=True
     )
 
+    # Create RSS
+    rss = create_rss(
+        detailed_articles
+    )
+
+    # Save RSS
     save_rss(
         rss
     )
 
+    print()
     print(
-        "Scraping complete."
+        "================================"
+    )
+    print(
+        "RSS SCRAPER FINISHED"
+    )
+    print(
+        "================================"
+    )
+    print(
+        f"Articles: {len(detailed_articles)}"
+    )
+    print(
+        "File: feed.xml"
     )
 
 
+# ============================================================
+# RUN
+# ============================================================
+
 if __name__ == "__main__":
+
     main()
