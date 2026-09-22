@@ -16,7 +16,7 @@ BASE_URL = "https://news.met.police.uk"
 
 # CHANGE THIS
 # Put your GitHub username and repository name here.
-RSS_URL = "https://YOUR-USERNAME.github.io/met-police-rss/feed.xml"
+RSS_URL = "https://greydog395.github.io/met-police-rss/feed.xml"
 
 
 HEADERS = {
